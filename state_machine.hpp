@@ -2,284 +2,282 @@
 #define STATE_MACHINE_HPP
 
 #include <functional>
+#include <stdexcept>
 #include <unordered_map>
-#include <vector>
-#include <string>
 #include <optional>
 
 /**
- * @brief A minimal and flexible finite state machine (FSM) implementation.
+ * @brief A deterministic finite state machine (FSM) with strict transition validation.
  *
- * This class provides a generic state machine framework that can operate in two modes:
- * - **MULTI_EVENT:** Emits multiple events per update (enter, update, exit, and transition).
- * - **SINGLE_EVENT:** Emits only one event per update, suitable for systems that process one event at a time.
+ * Each state can have multiple outgoing transitions, each with its own condition and optional callback.
+ * On update(), exactly one condition must evaluate to true; otherwise, an exception is thrown.
+ * It is the user's responsibility to provide mutually exclusive conditions.
  *
- * It does not perform side effects directly—only emits `Event` objects describing what happened.
- * Users can then handle these events externally in their own systems.
- *
- * @tparam StateType The enum or integral type representing all possible states.
- */
-template <typename StateType> class PureStateMachine {
-  public:
-    using Condition = std::function<bool()>;
-
-    /**
-     * @brief Represents a possible transition from one state to another.
-     */
-    struct Transition {
-        StateType to;        ///< The target state to transition to.
-        Condition condition; ///< A callable that returns true when the transition should occur.
-    };
-
-    /**
-     * @brief The type of event emitted by the state machine.
-     */
-    enum class EventType {
-        ENTER_STATE,  ///< Indicates entry into a new state.
-        UPDATE_STATE, ///< Indicates the current state is being updated.
-        EXIT_STATE,   ///< Indicates exit from a previous state.
-        TRANSITION    ///< Indicates a transition between two states.
-    };
-
-    /**
-     * @brief Represents a state-related event emitted during an update.
-     */
-    struct Event {
-        EventType type;       ///< The type of event.
-        StateType state;      ///< The current state.
-        StateType next_state; ///< The next state (may be the same as the current for non-transition events).
-    };
-
-    /**
-     * @brief Determines how many events are emitted per update tick.
-     */
-    enum class Mode {
-        MULTI_EVENT, ///< Default mode: may emit multiple events per tick.
-        SINGLE_EVENT ///< Alternate mode: only one event per tick.
-    };
-
-    /**
-     * @brief Constructs a new PureStateMachine with an initial state and mode.
-     *
-     * @param initial_state The starting state of the machine.
-     * @param mode The event emission mode (default: MULTI_EVENT).
-     */
-    explicit PureStateMachine(StateType initial_state, Mode mode = Mode::MULTI_EVENT)
-        : current_state(initial_state), mode(mode) {}
-
-    /**
-     * @brief Adds a new state to the machine.
-     *
-     * @param state The state to add.
-     */
-    void add_state(StateType state) { states[state] = {}; }
-
-    /**
-     * @brief Adds a conditional transition between two states.
-     *
-     * @param from The state from which the transition originates.
-     * @param to The state to transition to.
-     * @param condition A callable returning true if the transition should occur.
-     */
-    void add_transition(StateType from, StateType to, Condition condition) { states[from].push_back({to, condition}); }
-
-    /**
-     * @brief Updates the state machine and emits events describing what happened.
-     *
-     * The emitted events depend on the current mode:
-     * - In `MULTI_EVENT` mode, multiple events may be emitted per tick (enter, update, transition, etc.).
-     * - In `SINGLE_EVENT` mode, only one event is emitted per tick.
-     *
-     * @return A vector of events representing what occurred during the update.
-     */
-    [[nodiscard]] std::vector<Event> update_pure() {
-        switch (mode) {
-        case Mode::MULTI_EVENT:
-            return update_multi_event();
-        case Mode::SINGLE_EVENT:
-            return update_single_event();
-        default:
-            return {};
-        }
-    }
-
-    /**
-     * @brief Gets the current state.
-     * @return The current state.
-     */
-    [[nodiscard]] StateType get_state() const { return current_state; }
-
-    /**
-     * @brief Sets the current operational mode of the FSM.
-     * @param new_mode The new mode to use.
-     */
-    void set_mode(Mode new_mode) { mode = new_mode; }
-
-    /**
-     * @brief Gets the current operational mode.
-     * @return The current mode.
-     */
-    [[nodiscard]] Mode get_mode() const { return mode; }
-
-  private:
-    /**
-     * @brief Handles multi-event update mode.
-     *
-     * This mode can emit multiple events per update, such as:
-     * - `EXIT_STATE` and `ENTER_STATE` when the state changes.
-     * - `UPDATE_STATE` for ongoing updates.
-     * - `TRANSITION` if a condition triggers a state change.
-     *
-     * @return A vector of events emitted during this update.
-     */
-    [[nodiscard]] std::vector<Event> update_multi_event() {
-        std::vector<Event> events;
-
-        bool state_changed = current_state != previous_state;
-        if (state_changed) {
-            if (there_is_a_previous_state)
-                events.push_back({EventType::EXIT_STATE, previous_state, current_state});
-
-            events.push_back({EventType::ENTER_STATE, current_state, current_state});
-            previous_state = current_state;
-            there_is_a_previous_state = true;
-        }
-
-        events.push_back({EventType::UPDATE_STATE, current_state, current_state});
-
-        for (auto &t : states[current_state]) {
-            if (t.condition && t.condition()) {
-                events.push_back({EventType::TRANSITION, current_state, t.to});
-                current_state = t.to;
-                break;
-            }
-        }
-
-        return events;
-    }
-
-    /**
-     * @brief Handles single-event update mode.
-     *
-     * This mode emits only one event per tick, prioritizing transitions.
-     * The order of evaluation is:
-     * 1. State change detection (enter/exit)
-     * 2. Conditional transitions
-     * 3. Update event (default)
-     *
-     * @return A single-element vector containing the emitted event.
-     */
-    [[nodiscard]] std::vector<Event> update_single_event() {
-        bool state_changed = current_state != previous_state;
-
-        if (state_changed) {
-            if (there_is_a_previous_state) {
-                previous_state = current_state;
-                there_is_a_previous_state = true;
-                return {{EventType::EXIT_STATE, previous_state, current_state}};
-            } else {
-                previous_state = current_state;
-                there_is_a_previous_state = true;
-                return {{EventType::ENTER_STATE, current_state, current_state}};
-            }
-        }
-
-        // Evaluate transitions first
-        for (auto &t : states[current_state]) {
-            if (t.condition && t.condition()) {
-                current_state = t.to;
-                return {{EventType::TRANSITION, previous_state, current_state}};
-            }
-        }
-
-        // Default: update event
-        return {{EventType::UPDATE_STATE, current_state, current_state}};
-    }
-
-  private:
-    StateType current_state;                ///< The current active state.
-    StateType previous_state;               ///< The previous state (if any).
-    bool there_is_a_previous_state = false; ///< Whether a previous state has been recorded.
-    Mode mode;                              ///< The current operational mode (multi-event or single-event).
-
-    std::unordered_map<StateType, std::vector<Transition>> states; ///< All defined states and their transitions.
-};
-
-/**
- * @brief A state machine wrapper that binds actions (callbacks/lambdas) to state lifecycle events.
- *
- * This class wraps a PureStateMachine and executes side effects (callbacks) corresponding
- * to the emitted events from the pure FSM. It’s suitable for real-time or game logic,
- * where on_enter, on_update, and on_exit actions should trigger immediate effects.
- *
- * @tparam StateType Enum or integral type representing states.
+ * @tparam StateType Enum-like type representing states.
  */
 template <typename StateType> class StateMachine {
   public:
-    using Action = std::function<void()>;
     using Condition = std::function<bool()>;
-    using Pure = PureStateMachine<StateType>;
+    using Callback = std::function<void()>;
+    using StateToString = std::function<std::string(StateType)>;
 
-    struct State {
-        std::optional<Action> on_enter;
-        std::optional<Action> on_update;
-        std::optional<Action> on_exit;
+    /**
+     * @brief Represents a transition from one state to another.
+     */
+    struct Transition {
+        StateType to;                     ///< The target state.
+        Condition condition;              ///< Condition under which the transition occurs.
+        std::optional<Callback> callback; ///< Optional callback invoked when the transition occurs.
     };
 
-    explicit StateMachine(StateType initial_state) : pure_fsm(initial_state) {}
+    /**
+     * @brief Construct a FSM with an initial state and optional previous state.
+     *
+     * @param initial_state The starting state of the FSM.
+     * @param previous_state Optional previous state. If not provided, defaults to initial_state. The purpose of this
+     * parameter to allow you to run an initial transition to set things up if that's needed in your system.
+     * @param state_to_string_fn Optional function to convert a StateType value to a human-readable string.
+     *        If provided, exceptions thrown by the FSM (e.g., in update(), set_condition(), or set_callback())
+     *        will include readable state names, making error messages much clearer.
+     */
+    explicit StateMachine(StateType initial_state, std::optional<StateType> previous_state = std::nullopt,
+                          std::optional<StateToString> state_to_string_fn = std::nullopt)
+        : current_state(initial_state), previous_state(previous_state.value_or(initial_state)),
+          state_to_string(std::move(state_to_string_fn)) {}
 
-    void add_state(StateType state, std::optional<Action> on_enter = std::nullopt,
-                   std::optional<Action> on_update = std::nullopt, std::optional<Action> on_exit = std::nullopt) {
-        pure_fsm.add_state(state);
-        states[state] = {on_enter, on_update, on_exit};
-    }
-
-    void add_transition(StateType from, StateType to, Condition condition) {
-        pure_fsm.add_transition(from, to, condition);
+    /**
+     * @brief Add a transition between two states with an optional callback.
+     *
+     * @param from Source state.
+     * @param to Target state.
+     * @param condition Condition function for the transition.
+     * @param callback Optional callback executed when the transition occurs.
+     */
+    void add_transition(StateType from, StateType to, Condition condition,
+                        std::optional<Callback> callback = std::nullopt) {
+        transitions[from].push_back(Transition{to, std::move(condition), std::move(callback)});
     }
 
     /**
-     * @brief Performs one update tick:
-     *  - Runs pure logic (no side effects)
-     *  - Executes callbacks corresponding to emitted events
+     * @brief Update the condition for a specific transition.
+     *
+     * @param from Source state.
+     * @param to Target state.
+     * @param new_condition New condition function.
+     *
+     * @throws std::runtime_error if the transition does not exist.
      */
-    void update() {
-        auto events = pure_fsm.update_pure();
-
-        for (auto &event : events) {
-
-            // NOTE: the order in this switch defines that exit is run first, then enter, and then update
-            // which is how we would want it to be in terms of linear time
-            switch (event.type) {
-
-            case Pure::EventType::EXIT_STATE:
-                if (states[event.state].on_exit)
-                    (*states[event.state].on_exit)();
-                break;
-
-            case Pure::EventType::ENTER_STATE:
-                if (states[event.state].on_enter)
-                    (*states[event.state].on_enter)();
-                break;
-
-            case Pure::EventType::UPDATE_STATE:
-                if (states[event.state].on_update)
-                    (*states[event.state].on_update)();
-                break;
-
-            default:
-                break;
+    void set_condition(StateType from, StateType to, Condition new_condition) {
+        auto &vec = get_transition_vector(from);
+        for (auto &transition : vec) {
+            if (transition.to == to) {
+                transition.condition = std::move(new_condition);
+                return;
             }
+        }
+
+        if (state_to_string) {
+            throw std::runtime_error("No transition from state " + state_to_string.value()(from) + " to target state " +
+                                     state_to_string.value()(to) + " found.");
+        } else {
+            throw std::runtime_error("No transition from this state to target state found.");
         }
     }
 
-    [[nodiscard]] StateType get_state() const { return pure_fsm.get_state(); }
+    /**
+     * @brief Update the callback for a specific transition.
+     *
+     * @param from Source state.
+     * @param to Target state.
+     * @param new_callback New callback to replace the existing one (or std::nullopt to remove it).
+     *
+     * @throws std::runtime_error if the transition does not exist.
+     */
+    void set_callback(StateType from, StateType to, std::optional<Callback> new_callback) {
+        auto &vec = get_transition_vector(from);
+        for (auto &transition : vec) {
+            if (transition.to == to) {
+                transition.callback = std::move(new_callback);
+                return;
+            }
+        }
 
-    [[nodiscard]] const Pure &get_pure_fsm() const { return pure_fsm; }
+        if (state_to_string) {
+            throw std::runtime_error("No transition from state " + state_to_string.value()(from) + " to target state " +
+                                     state_to_string.value()(to) + " found.");
+        } else {
+            throw std::runtime_error("No transition from this state to target state found.");
+        }
+    }
+
+    /**
+     * @brief Extend an existing callback for a transition.
+     *
+     * This will preserve the existing callback (if any) and call the new one after it.
+     *
+     * @param from Source state.
+     * @param to Target state.
+     * @param additional_callback The callback to append.
+     *
+     * @throws std::runtime_error if the transition does not exist.
+     */
+    void extend_callback(StateType from, StateType to, Callback additional_callback) {
+        auto &vec = get_transition_vector(from);
+        for (auto &transition : vec) {
+            if (transition.to == to) {
+                if (transition.callback) {
+                    Callback original = transition.callback.value();
+                    transition.callback = [original, additional_callback]() {
+                        original();
+                        additional_callback();
+                    };
+                } else {
+                    transition.callback = std::move(additional_callback);
+                }
+                return;
+            }
+        }
+
+        if (state_to_string) {
+            throw std::runtime_error("No transition from state " + state_to_string.value()(from) + " to target state " +
+                                     state_to_string.value()(to) + " found.");
+        } else {
+            throw std::runtime_error("No transition from this state to target state found.");
+        }
+    }
+
+    /**
+     * @brief Update the FSM — transitions to exactly one next state.
+     *
+     * Evaluates all conditions for the current state's outgoing transitions.
+     * Exactly one must be true; otherwise, an exception is thrown.
+     * If no conditions are true and there is no explicit self-transition,
+     * the FSM will remain in the current state.
+     */
+    void update() {
+        auto transitions_from_current = transitions.find(current_state);
+
+        // If there are no outgoing transitions at all, just stay in the current state
+        if (transitions_from_current == transitions.end()) {
+            previous_state = current_state;
+            return;
+        }
+
+        auto &outgoing_transitions = transitions_from_current->second;
+        std::vector<Transition *> transitions_whose_conditions_were_met;
+        transitions_whose_conditions_were_met.reserve(outgoing_transitions.size());
+
+        for (auto &transition : outgoing_transitions) {
+            if (transition.condition && transition.condition()) {
+                transitions_whose_conditions_were_met.push_back(&transition);
+            }
+        }
+
+        if (transitions_whose_conditions_were_met.empty()) {
+            // Check if there is a self-transition explicitly
+            bool has_self_transition = false;
+            for (auto &t : outgoing_transitions) {
+                if (t.to == current_state) {
+                    has_self_transition = true;
+                    break;
+                }
+            }
+
+            if (has_self_transition) { // even the self transition was untrue, this is bad
+                // There is a self-transition, but its condition is false treat it as no valid transition
+                if (state_to_string) {
+                    throw std::runtime_error("No transition conditions are true for the current state: " +
+                                             state_to_string.value()(current_state));
+                } else {
+                    throw std::runtime_error("No transition conditions are true for the current state.");
+                }
+            }
+
+            // there were no valid outgoing transtitions, but there was no self transition, so we just stay in the
+            // current state
+
+            previous_state = current_state;
+            // Comment: "No valid transitions and no self-transition; FSM remains in current state."
+            return;
+        }
+
+        if (transitions_whose_conditions_were_met.size() > 1) {
+            if (state_to_string) {
+                std::string states_str;
+                for (auto *t : transitions_whose_conditions_were_met) {
+                    states_str += state_to_string.value()(t->to) + " ";
+                }
+                throw std::runtime_error("Multiple transition conditions are true for current state " +
+                                         state_to_string.value()(current_state) + ". Valid targets: " + states_str);
+            } else {
+                throw std::runtime_error("Multiple transition conditions are true for the current state.");
+            }
+        }
+
+        // Exactly one valid transition
+        Transition &transition_to_execute = *transitions_whose_conditions_were_met.front();
+        previous_state = current_state;
+        current_state = transition_to_execute.to;
+
+        if (transition_to_execute.callback) {
+            transition_to_execute.callback.value()();
+        }
+    }
+
+    /**
+     * @brief Get the previous and current states of the FSM.
+     *
+     * @return Tuple of (previous_state, current_state)
+     */
+    [[nodiscard]] std::tuple<StateType, StateType> get_state() const { return {previous_state, current_state}; }
 
   private:
-    Pure pure_fsm;
-    std::unordered_map<StateType, State> states;
+    /**
+     * @brief Helper to get the vector of transitions from a given state.
+     *
+     * @param from The source state.
+     * @return Reference to the vector of transitions.
+     * @throws std::runtime_error if no transitions exist from the given state.
+     */
+    std::vector<Transition> &get_transition_vector(StateType from) {
+        auto it = transitions.find(from);
+        if (it == transitions.end()) {
+            if (state_to_string) {
+                throw std::runtime_error("No transitions from state: " + state_to_string.value()(from));
+            } else {
+                throw std::runtime_error("No transitions from this state.");
+            }
+        }
+        return it->second;
+    }
+
+    std::optional<StateToString> state_to_string;
+
+    StateType current_state;  ///< The currently active state.
+    StateType previous_state; ///< The previous state before the last transition.
+
+    std::unordered_map<StateType, std::vector<Transition>> transitions; ///< All transitions keyed by source state.
 };
+
+/**
+ * @note Usage:
+ *
+ * 1. **Polling style:**
+ *    Call `update()` regularly (e.g., in a loop) and then check `get_state()`.
+ *    ```cpp
+ *    fsm.update();
+ *    auto [prev, curr] = fsm.get_state();
+ *    if (curr == MyState::Ready) { ... }
+ *    ```
+ *
+ * 2. **Callback style:**
+ *    Provide a callback when adding a transition. It will be invoked immediately
+ *    when the transition condition evaluates to true.
+ *    ```cpp
+ *    fsm.add_transition(MyState::Idle, MyState::Active,
+ *                       [](){ return should_activate(); },
+ *                       [](auto prev, auto curr){ std::cout << "Transitioned!\n"; });
+ *    ```
+ */
 
 #endif // STATE_MACHINE_HPP
